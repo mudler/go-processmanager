@@ -80,7 +80,7 @@ func exists(name string) bool {
 func (p *Process) Run() error {
 
 	p.readPID()
-	if p.proc != nil || p.PID != "" {
+	if p.proc != nil || p.PID != "" && p.IsAlive() {
 		return errors.New("command already started")
 	}
 
