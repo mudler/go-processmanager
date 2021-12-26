@@ -94,7 +94,7 @@ func (p *Process) Run() error {
 	wd, _ := os.Getwd()
 	proc := &os.ProcAttr{
 		Dir: wd,
-		Env: os.Environ(),
+		Env: p.config.Environment,
 		Files: []*os.File{
 			os.Stdin,
 			NewLog(p.StdoutPath()),

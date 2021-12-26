@@ -1,17 +1,22 @@
 package process
 
+import "os"
+
 type Option func(cfg *Config) error
 
 type Config struct {
-	Name       string
-	Args       []string
-	Combined   bool
-	StateDir   string
-	KillSignal string
+	Name        string
+	Args        []string
+	Combined    bool
+	StateDir    string
+	KillSignal  string
+	Environment []string
 }
 
 func DefaultConfig() *Config {
-	return &Config{}
+	return &Config{
+		Environment: os.Environ(),
+	}
 }
 
 // Apply applies the given options to the config, returning the first error

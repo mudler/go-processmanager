@@ -13,6 +13,13 @@ func WithKillSignal(s string) func(cfg *Config) error {
 	}
 }
 
+func WithEnvironment(s ...string) Option {
+	return func(cfg *Config) error {
+		cfg.Environment = s
+		return nil
+	}
+}
+
 func WithTemporaryStateDir() func(cfg *Config) error {
 	return func(cfg *Config) error {
 		dir, err := ioutil.TempDir(os.TempDir(), "go-processmanager")
