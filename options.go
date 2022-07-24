@@ -35,9 +35,11 @@ func WithStateDir(s string) func(cfg *Config) error {
 	}
 }
 
-var EnableSTDIN Option = func(cfg *Config) error {
-	cfg.Stdin = true
-	return nil
+func WithSTDIN(f *os.File) func(cfg *Config) error {
+	return func(cfg *Config) error {
+		cfg.Stdin = f
+		return nil
+	}
 }
 
 func WithName(s string) func(cfg *Config) error {
