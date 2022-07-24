@@ -91,12 +91,17 @@ func (p *Process) Run() error {
 		}
 	}
 
+	stdin := os.Stdin
+	if !p.config.Stdin {
+		stdin = nil
+	}
+
 	wd, _ := os.Getwd()
 	proc := &os.ProcAttr{
 		Dir: wd,
 		Env: p.config.Environment,
 		Files: []*os.File{
-			os.Stdin,
+			stdin,
 			NewLog(p.StdoutPath()),
 			NewLog(p.StderrPath()),
 		},

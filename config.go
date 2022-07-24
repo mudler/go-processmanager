@@ -11,6 +11,7 @@ type Config struct {
 	StateDir    string
 	KillSignal  string
 	Environment []string
+	Stdin       bool
 }
 
 func DefaultConfig() *Config {
