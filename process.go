@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"syscall"
+
+	"github.com/shirou/gopsutil/v3/process"
 )
 
 type Process struct {
@@ -150,21 +151,33 @@ func (p *Process) Stop() error {
 	if err != nil || pid == "" {
 		return errors.New("no pid")
 	}
-
-	sig := "-9"
-	if p.config.KillSignal != "" {
-		sig = fmt.Sprintf("-%s", p.config.KillSignal)
-	}
-	cmd := exec.Command("kill", sig, pid)
-	_, err = cmd.CombinedOutput()
+	// convert pid string to int32
+	pidInt, err := strconv.ParseInt(pid, 10, 64)
 	if err != nil {
 		return err
 	}
+
+	backendProcess, err := process.NewProcess(int32(pidInt))
+	if err != nil {
+		return err
+	}
+
+	if p.config.KillSignal != "" {
+		i, _ := strconv.ParseInt(p.config.KillSignal, 10, 64)
+		backendProcess.SendSignal(syscall.Signal(i))
+	} else {
+		backendProcess.SendSignal(syscall.SIGTERM)
+		err = backendProcess.Kill()
+		if err != nil {
+			return err
+		}
+	}
+
 	p.release()
 	return nil
 }
 
-//Release process and remove pidfile
+// Release process and remove pidfile
 func (p *Process) release() {
 	if p.proc != nil {
 		p.proc.Release()
