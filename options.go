@@ -1,14 +1,13 @@
 package process
 
 import (
-	"io/ioutil"
 	"os"
 )
 
-// WithKillSignal sets the given signal while attemping to stop. Defaults to "9"
-func WithKillSignal(s string) func(cfg *Config) error {
+// WithKillSignal sets the given signal while attemping to stop. Defaults to 9
+func WithKillSignal(i int) func(cfg *Config) error {
 	return func(cfg *Config) error {
-		cfg.KillSignal = s
+		cfg.KillSignal = &i
 		return nil
 	}
 }
@@ -22,7 +21,7 @@ func WithEnvironment(s ...string) Option {
 
 func WithTemporaryStateDir() func(cfg *Config) error {
 	return func(cfg *Config) error {
-		dir, err := ioutil.TempDir(os.TempDir(), "go-processmanager")
+		dir, err := os.MkdirTemp(os.TempDir(), "go-processmanager")
 		cfg.StateDir = dir
 		return err
 	}
@@ -52,6 +51,13 @@ func WithName(s string) func(cfg *Config) error {
 func WithArgs(s ...string) func(cfg *Config) error {
 	return func(cfg *Config) error {
 		cfg.Args = append(cfg.Args, s...)
+		return nil
+	}
+}
+
+func WithWorkDir(s string) func(cfg *Config) error {
+	return func(cfg *Config) error {
+		cfg.WorkDir = s
 		return nil
 	}
 }

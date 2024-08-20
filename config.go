@@ -9,9 +9,10 @@ type Config struct {
 	Args        []string
 	Combined    bool
 	StateDir    string
-	KillSignal  string
+	KillSignal  *int
 	Environment []string
 	Stdin       *os.File
+	WorkDir     string
 }
 
 func DefaultConfig() *Config {
