@@ -3,13 +3,12 @@ package process
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
 	"syscall"
 
-	"github.com/shirou/gopsutil/v3/process"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 type Process struct {
@@ -48,7 +47,7 @@ func (p *Process) StderrPath() string {
 }
 
 func (p *Process) readPID() (string, error) {
-	b, err := ioutil.ReadFile(
+	b, err := os.ReadFile(
 		p.path("pid"),
 	)
 	if err != nil {
@@ -60,7 +59,7 @@ func (p *Process) readPID() (string, error) {
 
 func (p *Process) writePID() error {
 	p.PID = fmt.Sprint(p.proc.Pid)
-	return ioutil.WriteFile(
+	return os.WriteFile(
 		p.path("pid"),
 		[]byte(p.PID),
 		os.ModePerm,
@@ -92,7 +91,15 @@ func (p *Process) Run() error {
 		}
 	}
 
-	wd, _ := os.Getwd()
+	wd := p.config.WorkDir
+	if wd == "" {
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			return err
+		}
+	}
+
 	proc := &os.ProcAttr{
 		Dir: wd,
 		Env: p.config.Environment,
@@ -162,9 +169,8 @@ func (p *Process) Stop() error {
 		return err
 	}
 
-	if p.config.KillSignal != "" {
-		i, _ := strconv.ParseInt(p.config.KillSignal, 10, 64)
-		backendProcess.SendSignal(syscall.Signal(i))
+	if p.config.KillSignal != nil {
+		backendProcess.SendSignal(syscall.Signal(*p.config.KillSignal))
 	} else {
 		backendProcess.SendSignal(syscall.SIGTERM)
 		err = backendProcess.Kill()
@@ -188,7 +194,7 @@ func (p *Process) release() {
 
 // ExitCode returns the exitcode associated with the process
 func (p *Process) ExitCode() (string, error) {
-	b, err := ioutil.ReadFile(
+	b, err := os.ReadFile(
 		p.path("exitcode"),
 	)
 	if err != nil {
@@ -216,13 +222,13 @@ func (p *Process) monitor() {
 
 	select {
 	case s := <-status:
-		ioutil.WriteFile(
+		os.WriteFile(
 			p.path("exitcode"),
 			[]byte(fmt.Sprint(s.ExitCode())),
 			os.ModePerm,
 		)
 	case err := <-died:
-		ioutil.WriteFile(
+		os.WriteFile(
 			p.path("error"),
 			[]byte(err.Error()),
 			os.ModePerm,
