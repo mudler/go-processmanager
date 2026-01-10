@@ -107,9 +107,7 @@ func (p *Process) Run() error {
 			NewLog(p.StdoutPath()),
 			NewLog(p.StderrPath()),
 		},
-		Sys: &syscall.SysProcAttr{
-			Setpgid: true, // Create new process group
-		},
+		Sys: getSysProcAttr(),
 	}
 	args := append([]string{p.config.Name}, p.config.Args...)
 	process, err := os.StartProcess(p.config.Name, args, proc)
@@ -160,17 +158,10 @@ func (p *Process) Stop() error {
 	if err != nil || pid == "" {
 		return errors.New("no pid")
 	}
-	// convert pid string to int32
+	// convert pid string to int
 	pidInt, err := strconv.ParseInt(pid, 10, 64)
 	if err != nil {
 		return err
-	}
-
-	// Determine the target for the signal (process or process group)
-	target := int(pidInt)
-	if p.config.KillProcessGroup {
-		// Use negative PID to target the entire process group
-		target = -int(pidInt)
 	}
 
 	// Determine which signal to send
@@ -180,10 +171,9 @@ func (p *Process) Stop() error {
 	}
 
 	// Send the initial signal (SIGTERM or custom KillSignal)
-	syscall.Kill(target, signal)
+	killProcess(int(pidInt), signal, p.config.KillProcessGroup)
 
-	// If a custom KillSignal was provided, wait for graceful timeout
-	// then send SIGKILL if the process is still alive
+	// Wait for graceful timeout then send SIGKILL if the process is still alive
 	if p.config.GracefulTimeout > 0 {
 		// Wait for the graceful timeout period
 		deadline := time.Now().Add(p.config.GracefulTimeout)
@@ -198,7 +188,7 @@ func (p *Process) Stop() error {
 
 		// If still alive after grace period, send SIGKILL
 		if p.IsAlive() {
-			syscall.Kill(target, syscall.SIGKILL)
+			killProcess(int(pidInt), syscall.SIGKILL, p.config.KillProcessGroup)
 		}
 	}
 
