@@ -7,8 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
-
-	"github.com/shirou/gopsutil/v4/process"
+	"time"
 )
 
 type Process struct {
@@ -91,6 +90,14 @@ func (p *Process) Run() error {
 		}
 	}
 
+	// Set the current process as a subreaper to manage orphaned child processes
+	// This ensures that when child processes terminate, their zombie processes
+	// are reparented to us instead of init, allowing proper cleanup
+	if err := SetSubreaper(); err != nil {
+		// Non-fatal error - log and continue
+		// This will fail on non-Linux systems but that's expected
+	}
+
 	wd := p.config.WorkDir
 	if wd == "" {
 		var err error
@@ -108,6 +115,7 @@ func (p *Process) Run() error {
 			NewLog(p.StdoutPath()),
 			NewLog(p.StderrPath()),
 		},
+		Sys: getSysProcAttr(),
 	}
 	args := append([]string{p.config.Name}, p.config.Args...)
 	process, err := os.StartProcess(p.config.Name, args, proc)
@@ -152,30 +160,51 @@ func (p *Process) IsAlive() bool {
 	return false
 }
 
-// Stop stops the running process by senging KillSignal to the PID annotated in the pidfile
+// Stop stops the running process by sending KillSignal to the PID annotated in the pidfile
 func (p *Process) Stop() error {
 	pid, err := p.readPID()
-	if err != nil || pid == "" {
-		return errors.New("no pid")
+	if err != nil {
+		return fmt.Errorf("failed to read PID: %w", err)
 	}
-	// convert pid string to int32
+	if pid == "" {
+		return errors.New("stop failed: PID is empty")
+	}
+	
+	// convert pid string to int
 	pidInt, err := strconv.ParseInt(pid, 10, 64)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to parse PID %q: %w", pid, err)
 	}
 
-	backendProcess, err := process.NewProcess(int32(pidInt))
-	if err != nil {
-		return err
-	}
-
+	// Determine which signal to send
+	signal := syscall.SIGTERM
 	if p.config.KillSignal != nil {
-		backendProcess.SendSignal(syscall.Signal(*p.config.KillSignal))
-	} else {
-		backendProcess.SendSignal(syscall.SIGTERM)
-		err = backendProcess.Kill()
-		if err != nil {
-			return err
+		signal = syscall.Signal(*p.config.KillSignal)
+	}
+
+	// Send the initial signal (SIGTERM or custom KillSignal)
+	if err := killProcess(int(pidInt), signal, p.config.KillProcessGroup); err != nil {
+		return fmt.Errorf("failed to send signal %v to process %d: %w", signal, pidInt, err)
+	}
+
+	// Wait for graceful timeout then send SIGKILL if the process is still alive
+	if p.config.GracefulTimeout > 0 {
+		// Wait for the graceful timeout period
+		deadline := time.Now().Add(p.config.GracefulTimeout)
+		for time.Now().Before(deadline) {
+			if !p.IsAlive() {
+				// Process has terminated, no need to force kill
+				p.release()
+				return nil
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		// If still alive after grace period, send SIGKILL
+		if p.IsAlive() {
+			if err := killProcess(int(pidInt), syscall.SIGKILL, p.config.KillProcessGroup); err != nil {
+				return fmt.Errorf("failed to send SIGKILL to process %d: %w", pidInt, err)
+			}
 		}
 	}
 
@@ -208,6 +237,11 @@ func (p *Process) monitor() {
 	if p.proc == nil {
 		return
 	}
+	
+	// Start a goroutine to reap orphaned child processes
+	// This is needed when we're acting as a subreaper
+	go p.reapChildren()
+	
 	status := make(chan *os.ProcessState)
 	died := make(chan error)
 	go func() {

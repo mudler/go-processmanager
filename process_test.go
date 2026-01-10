@@ -138,4 +138,51 @@ exit 2
 			Expect(e).To(Equal("2"))
 		})
 	})
+
+	Context("process group termination", func() {
+		It("kills child processes when parent is stopped", func() {
+			dir, err := os.MkdirTemp(os.TempDir(), "")
+			Expect(err).ToNot(HaveOccurred())
+			defer os.RemoveAll(dir)
+
+			// Start a parent process that spawns a child process
+			p := New(
+				WithStateDir(dir),
+				WithName("/bin/bash"),
+				WithArgs("-c", `
+echo "starting"
+
+# Start a child process that runs indefinitely
+(
+  while true; do
+    sleep 1
+  done
+) &
+
+# Parent also runs indefinitely
+while true; do
+  sleep 1
+done
+`),
+			)
+			Expect(p.Run()).ToNot(HaveOccurred())
+
+			// Wait for the process to start
+			Eventually(func() string {
+				c, _ := os.ReadFile(p.StdoutPath())
+				return string(c)
+			}, "5s").Should(ContainSubstring("starting"))
+
+			// Verify process is alive
+			Expect(p.IsAlive()).To(BeTrue())
+
+			// Stop the parent process (should kill entire process group)
+			Expect(p.Stop()).ToNot(HaveOccurred())
+
+			// Verify the process is no longer alive
+			Eventually(func() bool {
+				return p.IsAlive()
+			}, "10s").Should(BeFalse())
+		})
+	})
 })

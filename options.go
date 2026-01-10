@@ -2,6 +2,7 @@ package process
 
 import (
 	"os"
+	"time"
 )
 
 // WithKillSignal sets the given signal while attemping to stop. Defaults to 9
@@ -58,6 +59,22 @@ func WithArgs(s ...string) func(cfg *Config) error {
 func WithWorkDir(s string) func(cfg *Config) error {
 	return func(cfg *Config) error {
 		cfg.WorkDir = s
+		return nil
+	}
+}
+
+// WithGracefulTimeout sets the duration to wait after SIGTERM before SIGKILL
+func WithGracefulTimeout(d time.Duration) func(cfg *Config) error {
+	return func(cfg *Config) error {
+		cfg.GracefulTimeout = d
+		return nil
+	}
+}
+
+// WithKillProcessGroup enables or disables killing the entire process group
+func WithKillProcessGroup(b bool) func(cfg *Config) error {
+	return func(cfg *Config) error {
+		cfg.KillProcessGroup = b
 		return nil
 	}
 }
