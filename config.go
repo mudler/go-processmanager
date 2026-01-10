@@ -24,7 +24,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Environment:      os.Environ(),
 		KillProcessGroup: true,         // Default to killing process group
-		GracefulTimeout:  5 * time.Second, // Default 5 second grace period
+		GracefulTimeout:  15 * time.Second, // Default 15 second grace period
 	}
 }
 
