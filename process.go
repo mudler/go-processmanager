@@ -7,8 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
-
-	"github.com/shirou/gopsutil/v4/process"
+	"time"
 )
 
 type Process struct {
@@ -108,6 +107,9 @@ func (p *Process) Run() error {
 			NewLog(p.StdoutPath()),
 			NewLog(p.StderrPath()),
 		},
+		Sys: &syscall.SysProcAttr{
+			Setpgid: true, // Create new process group
+		},
 	}
 	args := append([]string{p.config.Name}, p.config.Args...)
 	process, err := os.StartProcess(p.config.Name, args, proc)
@@ -152,7 +154,7 @@ func (p *Process) IsAlive() bool {
 	return false
 }
 
-// Stop stops the running process by senging KillSignal to the PID annotated in the pidfile
+// Stop stops the running process by sending KillSignal to the PID annotated in the pidfile
 func (p *Process) Stop() error {
 	pid, err := p.readPID()
 	if err != nil || pid == "" {
@@ -164,18 +166,39 @@ func (p *Process) Stop() error {
 		return err
 	}
 
-	backendProcess, err := process.NewProcess(int32(pidInt))
-	if err != nil {
-		return err
+	// Determine the target for the signal (process or process group)
+	target := int(pidInt)
+	if p.config.KillProcessGroup {
+		// Use negative PID to target the entire process group
+		target = -int(pidInt)
 	}
 
+	// Determine which signal to send
+	signal := syscall.SIGTERM
 	if p.config.KillSignal != nil {
-		backendProcess.SendSignal(syscall.Signal(*p.config.KillSignal))
-	} else {
-		backendProcess.SendSignal(syscall.SIGTERM)
-		err = backendProcess.Kill()
-		if err != nil {
-			return err
+		signal = syscall.Signal(*p.config.KillSignal)
+	}
+
+	// Send the initial signal (SIGTERM or custom KillSignal)
+	syscall.Kill(target, signal)
+
+	// If a custom KillSignal was provided, wait for graceful timeout
+	// then send SIGKILL if the process is still alive
+	if p.config.GracefulTimeout > 0 {
+		// Wait for the graceful timeout period
+		deadline := time.Now().Add(p.config.GracefulTimeout)
+		for time.Now().Before(deadline) {
+			if !p.IsAlive() {
+				// Process has terminated, no need to force kill
+				p.release()
+				return nil
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		// If still alive after grace period, send SIGKILL
+		if p.IsAlive() {
+			syscall.Kill(target, syscall.SIGKILL)
 		}
 	}
 

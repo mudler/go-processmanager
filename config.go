@@ -1,23 +1,30 @@
 package process
 
-import "os"
+import (
+	"os"
+	"time"
+)
 
 type Option func(cfg *Config) error
 
 type Config struct {
-	Name        string
-	Args        []string
-	Combined    bool
-	StateDir    string
-	KillSignal  *int
-	Environment []string
-	Stdin       *os.File
-	WorkDir     string
+	Name             string
+	Args             []string
+	Combined         bool
+	StateDir         string
+	KillSignal       *int
+	Environment      []string
+	Stdin            *os.File
+	WorkDir          string
+	GracefulTimeout  time.Duration // Time to wait after SIGTERM before SIGKILL
+	KillProcessGroup bool          // Whether to kill entire process group (default true)
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		Environment: os.Environ(),
+		Environment:      os.Environ(),
+		KillProcessGroup: true,         // Default to killing process group
+		GracefulTimeout:  5 * time.Second, // Default 5 second grace period
 	}
 }
 
