@@ -163,13 +163,17 @@ func (p *Process) IsAlive() bool {
 // Stop stops the running process by sending KillSignal to the PID annotated in the pidfile
 func (p *Process) Stop() error {
 	pid, err := p.readPID()
-	if err != nil || pid == "" {
-		return errors.New("no pid")
+	if err != nil {
+		return fmt.Errorf("failed to read PID: %w", err)
 	}
+	if pid == "" {
+		return errors.New("stop failed: PID is empty")
+	}
+	
 	// convert pid string to int
 	pidInt, err := strconv.ParseInt(pid, 10, 64)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to parse PID %q: %w", pid, err)
 	}
 
 	// Determine which signal to send
@@ -179,7 +183,9 @@ func (p *Process) Stop() error {
 	}
 
 	// Send the initial signal (SIGTERM or custom KillSignal)
-	killProcess(int(pidInt), signal, p.config.KillProcessGroup)
+	if err := killProcess(int(pidInt), signal, p.config.KillProcessGroup); err != nil {
+		return fmt.Errorf("failed to send signal %v to process %d: %w", signal, pidInt, err)
+	}
 
 	// Wait for graceful timeout then send SIGKILL if the process is still alive
 	if p.config.GracefulTimeout > 0 {
@@ -196,7 +202,9 @@ func (p *Process) Stop() error {
 
 		// If still alive after grace period, send SIGKILL
 		if p.IsAlive() {
-			killProcess(int(pidInt), syscall.SIGKILL, p.config.KillProcessGroup)
+			if err := killProcess(int(pidInt), syscall.SIGKILL, p.config.KillProcessGroup); err != nil {
+				return fmt.Errorf("failed to send SIGKILL to process %d: %w", pidInt, err)
+			}
 		}
 	}
 
