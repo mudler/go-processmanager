@@ -90,6 +90,14 @@ func (p *Process) Run() error {
 		}
 	}
 
+	// Set the current process as a subreaper to manage orphaned child processes
+	// This ensures that when child processes terminate, their zombie processes
+	// are reparented to us instead of init, allowing proper cleanup
+	if err := SetSubreaper(); err != nil {
+		// Non-fatal error - log and continue
+		// This will fail on non-Linux systems but that's expected
+	}
+
 	wd := p.config.WorkDir
 	if wd == "" {
 		var err error
@@ -221,6 +229,11 @@ func (p *Process) monitor() {
 	if p.proc == nil {
 		return
 	}
+	
+	// Start a goroutine to reap orphaned child processes
+	// This is needed when we're acting as a subreaper
+	go p.reapChildren()
+	
 	status := make(chan *os.ProcessState)
 	died := make(chan error)
 	go func() {

@@ -23,3 +23,9 @@ func killProcess(pid int, signal syscall.Signal, killProcessGroup bool) error {
 	}
 	return proc.Kill()
 }
+
+// reapChildren is a no-op on Windows
+// Windows doesn't have the same zombie process concept as Unix
+func (p *Process) reapChildren() {
+	// No-op on Windows
+}
