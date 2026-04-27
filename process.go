@@ -14,6 +14,7 @@ type Process struct {
 	config Config
 	proc   *os.Process
 	PID    string
+	done   chan struct{}
 }
 
 // New builds up a new process with options
@@ -23,7 +24,20 @@ func New(p ...Option) *Process {
 
 	return &Process{
 		config: *c,
+		done:   make(chan struct{}),
 	}
+}
+
+// Done returns a channel that is closed once the process has exited
+// (whether cleanly or because Wait returned an error). It is safe to
+// receive from before Run is called; the channel will not be closed
+// until a process is actually started and exits.
+//
+// After Done is closed, ExitCode reports the exit status. If the
+// process exited because Wait returned an error, the "error" file
+// in StateDir holds the message and ExitCode will return an error.
+func (p *Process) Done() <-chan struct{} {
+	return p.done
 }
 
 func (p *Process) path(pa string) string {
@@ -237,11 +251,12 @@ func (p *Process) monitor() {
 	if p.proc == nil {
 		return
 	}
-	
+	defer close(p.done)
+
 	// Start a goroutine to reap orphaned child processes
 	// This is needed when we're acting as a subreaper
 	go p.reapChildren()
-	
+
 	status := make(chan *os.ProcessState)
 	died := make(chan error)
 	go func() {
