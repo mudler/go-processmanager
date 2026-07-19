@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -13,8 +14,22 @@ import (
 type Process struct {
 	config Config
 	proc   *os.Process
-	PID    string
-	done   chan struct{}
+
+	// PID holds the process ID last written to the pidfile.
+	//
+	// Deprecated: read it through CurrentPID instead. The monitor goroutine
+	// clears this field when the process exits, so a direct field read races
+	// with the library's own bookkeeping. It is kept for backwards
+	// compatibility and will be unexported in a future release.
+	PID string
+
+	// mu guards PID. Writes come from both the caller (Run, Stop) and the
+	// monitor goroutine (release, on the Wait-error path), so every access has
+	// to be synchronized. It is never held across a syscall or a file
+	// operation, so no path holding it can re-enter it.
+	mu sync.RWMutex
+
+	done chan struct{}
 }
 
 // New builds up a new process with options
@@ -59,6 +74,24 @@ func (p *Process) StderrPath() string {
 	return p.path("stderr")
 }
 
+// CurrentPID returns the process ID currently tracked by this handle, or an
+// empty string if no process has been started or the process has exited.
+func (p *Process) CurrentPID() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.PID
+}
+
+func (p *Process) setPID(pid string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.PID = pid
+}
+
+// readPID returns the contents of the pidfile. It deliberately does not cache
+// the result on the Process: it is called from the caller's goroutine (Run,
+// Stop, IsAlive) and from the monitor's reaper goroutine at the same time, and
+// caching turned every one of those call sites into an unsynchronized write.
 func (p *Process) readPID() (string, error) {
 	b, err := os.ReadFile(
 		p.path("pid"),
@@ -66,15 +99,15 @@ func (p *Process) readPID() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	p.PID = string(b)
-	return p.PID, nil
+	return string(b), nil
 }
 
 func (p *Process) writePID() error {
-	p.PID = fmt.Sprint(p.proc.Pid)
+	pid := fmt.Sprint(p.proc.Pid)
+	p.setPID(pid)
 	return os.WriteFile(
 		p.path("pid"),
-		[]byte(p.PID),
+		[]byte(pid),
 		os.ModePerm,
 	)
 }
@@ -92,8 +125,8 @@ func exists(name string) bool {
 // Run starts the process and returns any error
 func (p *Process) Run() error {
 
-	p.readPID()
-	if p.proc != nil || p.PID != "" && p.IsAlive() {
+	pid, _ := p.readPID()
+	if p.proc != nil || pid != "" && p.IsAlive() {
 		return errors.New("command already started")
 	}
 
@@ -145,8 +178,11 @@ func (p *Process) Run() error {
 
 // IsAlive checks if the process is running or not
 func (p *Process) IsAlive() bool {
-	p.readPID()
-	pid, err := strconv.ParseInt(p.PID, 10, 64)
+	pidStr, err := p.readPID()
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.ParseInt(pidStr, 10, 64)
 	if err != nil {
 		return false
 	}
@@ -231,7 +267,7 @@ func (p *Process) release() {
 	if p.proc != nil {
 		p.proc.Release()
 	}
-	p.PID = ""
+	p.setPID("")
 	os.RemoveAll(p.path("pid"))
 }
 

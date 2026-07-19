@@ -2,6 +2,8 @@ package process_test
 
 import (
 	"os"
+	"sync"
+	"time"
 
 	. "github.com/mudler/go-processmanager"
 	. "github.com/onsi/ginkgo"
@@ -136,6 +138,65 @@ exit 2
 			e, err := New(WithStateDir(dir)).ExitCode()
 			Expect(err).ToNot(HaveOccurred())
 			Expect(e).To(Equal("2"))
+		})
+	})
+
+	Context("concurrency", func() {
+		// A bare Run/Stop cycle is enough to trip the race detector: the
+		// library's own monitor goroutine polls IsAlive while the caller is in
+		// Stop. This spec only asserts the normal lifecycle - its real
+		// assertion is made by -race, so it must be run with it enabled.
+		It("does not race between Stop, IsAlive and the monitor goroutine", func() {
+			dir, err := os.MkdirTemp(os.TempDir(), "")
+			Expect(err).ToNot(HaveOccurred())
+			defer os.RemoveAll(dir)
+
+			p := New(
+				WithStateDir(dir),
+				WithName("/bin/bash"),
+				WithArgs("-c", `
+echo "starting"
+while true; do
+  sleep 1
+done
+`),
+				WithGracefulTimeout(2*time.Second),
+			)
+			Expect(p.Run()).ToNot(HaveOccurred())
+
+			Eventually(func() string {
+				c, _ := os.ReadFile(p.StdoutPath())
+				return string(c)
+			}, "10s").Should(ContainSubstring("starting"))
+
+			// Widen the window by having callers read process state while the
+			// monitor goroutine and Stop are both running.
+			stopReaders := make(chan struct{})
+			var readers sync.WaitGroup
+			for i := 0; i < 4; i++ {
+				readers.Add(1)
+				go func() {
+					defer readers.Done()
+					for {
+						select {
+						case <-stopReaders:
+							return
+						default:
+							p.IsAlive()
+							p.CurrentPID()
+						}
+					}
+				}()
+			}
+
+			Expect(p.Stop()).ToNot(HaveOccurred())
+			close(stopReaders)
+			readers.Wait()
+
+			Eventually(func() bool {
+				return p.IsAlive()
+			}, "10s").Should(BeFalse())
+			Expect(p.CurrentPID()).To(Equal(""))
 		})
 	})
 
