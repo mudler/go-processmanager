@@ -14,5 +14,7 @@ jobs:
         go-version: ${{ matrix.go-version }}
     - name: Checkout code
       uses: actions/checkout@v4
+    # -race is what catches the process-lifecycle races between the caller and
+    # the internal monitor goroutine; without it they stay invisible in CI.
     - name: Test
-      run: go test -v ./
+      run: go test -race -v ./
