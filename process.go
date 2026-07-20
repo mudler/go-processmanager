@@ -23,14 +23,29 @@ type Process struct {
 	// compatibility and will be unexported in a future release.
 	PID string
 
-	// mu guards PID. Writes come from both the caller (Run, Stop) and the
-	// monitor goroutine (release, on the Wait-error path), so every access has
-	// to be synchronized. It is never held across a syscall or a file
-	// operation, so no path holding it can re-enter it.
+	// mu guards PID, proc and started. Writes come from both the caller (Run,
+	// Stop) and the monitor goroutine (release, on the Wait-error path), so
+	// every access has to be synchronized. It is never held across a syscall or
+	// a file operation, so no path holding it can re-enter it.
 	mu sync.RWMutex
+
+	// started records that this handle has claimed its single run. It is what
+	// makes a Process single-use: once set it is only ever cleared if the start
+	// itself failed, so done is closed by at most one monitor goroutine over
+	// the lifetime of the handle.
+	started bool
 
 	done chan struct{}
 }
+
+// ErrProcessAlreadyRun is returned by Run when the handle has already started a
+// process. A Process is single-use: it owns exactly one done channel and one
+// monitor goroutine, and neither is recreated, so restarting through the same
+// handle is not supported. Construct a new Process to start another one.
+//
+// The message keeps the historical "command already started" prefix so callers
+// matching on that text keep working.
+var ErrProcessAlreadyRun = errors.New("command already started: a Process handle is single-use, construct a new one to start another process")
 
 // New builds up a new process with options
 func New(p ...Option) *Process {
@@ -88,6 +103,45 @@ func (p *Process) setPID(pid string) {
 	p.PID = pid
 }
 
+// currentProc returns the started process, or nil. Callers use the returned
+// value outside the lock: os.Process is safe for concurrent use, and blocking
+// on Wait while holding mu would deadlock every other accessor.
+func (p *Process) currentProc() *os.Process {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.proc
+}
+
+func (p *Process) setProc(proc *os.Process) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.proc = proc
+}
+
+// claimRun reserves this handle's single run. Checking and marking under one
+// lock is what makes concurrent Run calls safe: without it every caller can
+// observe an unstarted handle, start its own process and launch its own monitor
+// goroutine, and the second monitor to finish panics closing an already-closed
+// done channel.
+func (p *Process) claimRun() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.started {
+		return ErrProcessAlreadyRun
+	}
+	p.started = true
+	return nil
+}
+
+// releaseClaim gives the claim back after a start that never produced a
+// process, so that a caller can retry a Run that failed on, say, a missing
+// binary. No monitor goroutine exists on that path.
+func (p *Process) releaseClaim() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.started = false
+}
+
 // readPID returns the contents of the pidfile. It deliberately does not cache
 // the result on the Process: it is called from the caller's goroutine (Run,
 // Stop, IsAlive) and from the monitor's reaper goroutine at the same time, and
@@ -102,8 +156,8 @@ func (p *Process) readPID() (string, error) {
 	return string(b), nil
 }
 
-func (p *Process) writePID() error {
-	pid := fmt.Sprint(p.proc.Pid)
+func (p *Process) writePID(proc *os.Process) error {
+	pid := fmt.Sprint(proc.Pid)
 	p.setPID(pid)
 	return os.WriteFile(
 		p.path("pid"),
@@ -122,17 +176,31 @@ func exists(name string) bool {
 	return true
 }
 
-// Run starts the process and returns any error
+// Run starts the process and returns any error.
+//
+// A Process handle is single-use. Once Run has started a process, every later
+// Run on the same handle returns ErrProcessAlreadyRun, whether or not that
+// process has since exited or been stopped: the done channel and the monitor
+// goroutine are created once and are not recreated. To start another process,
+// build a new handle with New. A Run that fails before starting anything can be
+// retried.
 func (p *Process) Run() error {
 
-	pid, _ := p.readPID()
-	if p.proc != nil || pid != "" && p.IsAlive() {
+	if err := p.claimRun(); err != nil {
+		return err
+	}
+
+	// From here on every failure has to hand the claim back, otherwise a start
+	// that never happened would burn the handle's single run.
+	if pid, _ := p.readPID(); pid != "" && p.IsAlive() {
+		p.releaseClaim()
 		return errors.New("command already started")
 	}
 
 	if !exists(p.config.StateDir) {
 		err := os.MkdirAll(p.config.StateDir, os.ModePerm)
 		if err != nil {
+			p.releaseClaim()
 			return err
 		}
 	}
@@ -150,6 +218,7 @@ func (p *Process) Run() error {
 		var err error
 		wd, err = os.Getwd()
 		if err != nil {
+			p.releaseClaim()
 			return err
 		}
 	}
@@ -167,11 +236,12 @@ func (p *Process) Run() error {
 	args := append([]string{p.config.Name}, p.config.Args...)
 	process, err := os.StartProcess(p.config.Name, args, proc)
 	if err != nil {
+		p.releaseClaim()
 		return err
 	}
 
-	p.proc = process
-	p.writePID()
+	p.setProc(process)
+	p.writePID(process)
 	go p.monitor()
 	return nil
 }
@@ -264,8 +334,8 @@ func (p *Process) Stop() error {
 
 // Release process and remove pidfile
 func (p *Process) release() {
-	if p.proc != nil {
-		p.proc.Release()
+	if proc := p.currentProc(); proc != nil {
+		proc.Release()
 	}
 	p.setPID("")
 	os.RemoveAll(p.path("pid"))
@@ -284,7 +354,8 @@ func (p *Process) ExitCode() (string, error) {
 
 // Watch the process
 func (p *Process) monitor() {
-	if p.proc == nil {
+	proc := p.currentProc()
+	if proc == nil {
 		return
 	}
 	defer close(p.done)
@@ -296,7 +367,7 @@ func (p *Process) monitor() {
 	status := make(chan *os.ProcessState)
 	died := make(chan error)
 	go func() {
-		state, err := p.proc.Wait()
+		state, err := proc.Wait()
 		if err != nil {
 			died <- err
 			return
