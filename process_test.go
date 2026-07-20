@@ -2,6 +2,7 @@ package process_test
 
 import (
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -197,6 +198,114 @@ done
 				return p.IsAlive()
 			}, "10s").Should(BeFalse())
 			Expect(p.CurrentPID()).To(Equal(""))
+		})
+	})
+
+	Context("single-use lifecycle", func() {
+		// Run's "already started" guard is a check-then-act on p.proc with no
+		// lock around it. Concurrent callers can all observe a nil p.proc, all
+		// start a process and all launch a monitor goroutine - and every
+		// monitor closes the same done channel when its Wait returns, so the
+		// second one panics with "close of closed channel".
+		It("starts exactly one process when Run is called concurrently", func() {
+			dir, err := os.MkdirTemp(os.TempDir(), "")
+			Expect(err).ToNot(HaveOccurred())
+			defer os.RemoveAll(dir)
+
+			p := New(
+				WithStateDir(dir),
+				WithName("/bin/bash"),
+				WithArgs("-c", `echo "started"`),
+			)
+
+			const callers = 8
+			errs := make([]error, callers)
+			barrier := make(chan struct{})
+			var callersDone sync.WaitGroup
+			for i := 0; i < callers; i++ {
+				callersDone.Add(1)
+				go func(i int) {
+					defer callersDone.Done()
+					<-barrier
+					errs[i] = p.Run()
+				}(i)
+			}
+			close(barrier)
+			callersDone.Wait()
+
+			started := 0
+			for _, err := range errs {
+				if err == nil {
+					started++
+				}
+			}
+			Expect(started).To(Equal(1), "exactly one Run call may start a process")
+
+			// Closing done is what a duplicate monitor goroutine would panic
+			// on, so waiting for the process to exit is the real assertion.
+			Eventually(p.Done(), "10s").Should(BeClosed())
+		})
+
+		It("refuses to re-run a handle whose process has exited", func() {
+			dir, err := os.MkdirTemp(os.TempDir(), "")
+			Expect(err).ToNot(HaveOccurred())
+			defer os.RemoveAll(dir)
+
+			p := New(
+				WithStateDir(dir),
+				WithName("/bin/bash"),
+				WithArgs("-c", `echo "started"`),
+			)
+
+			Expect(p.Run()).ToNot(HaveOccurred())
+			Eventually(p.Done(), "10s").Should(BeClosed())
+
+			Expect(p.Run()).To(MatchError(ErrProcessAlreadyRun))
+		})
+
+		It("refuses to re-run a handle that was stopped", func() {
+			dir, err := os.MkdirTemp(os.TempDir(), "")
+			Expect(err).ToNot(HaveOccurred())
+			defer os.RemoveAll(dir)
+
+			p := New(
+				WithStateDir(dir),
+				WithName("/bin/bash"),
+				WithArgs("-c", `
+echo "started"
+while true; do
+  sleep 1
+done
+`),
+				WithGracefulTimeout(2*time.Second),
+			)
+
+			Expect(p.Run()).ToNot(HaveOccurred())
+			Eventually(func() string {
+				c, _ := os.ReadFile(p.StdoutPath())
+				return string(c)
+			}, "10s").Should(ContainSubstring("started"))
+
+			Expect(p.Stop()).ToNot(HaveOccurred())
+
+			// Stop clears the pidfile, so nothing else would catch the reuse.
+			Expect(p.Run()).To(MatchError(ErrProcessAlreadyRun))
+		})
+
+		It("allows retrying a Run that never started a process", func() {
+			dir, err := os.MkdirTemp(os.TempDir(), "")
+			Expect(err).ToNot(HaveOccurred())
+			defer os.RemoveAll(dir)
+
+			p := New(
+				WithStateDir(dir),
+				WithName(filepath.Join(dir, "does-not-exist")),
+			)
+
+			// A failed start burns nothing: the handle has no monitor goroutine
+			// and no live process, so the caller may fix the cause and retry.
+			Expect(p.Run()).To(HaveOccurred())
+			Expect(p.Run()).ToNot(MatchError(ErrProcessAlreadyRun))
 		})
 	})
 

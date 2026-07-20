@@ -42,7 +42,7 @@ func (p *Process) reapChildren() {
 		if err == syscall.ECHILD || pid == 0 {
 			// Check if the main process is still alive
 			// If not, we can exit the reaper
-			if p.proc == nil || !p.IsAlive() {
+			if p.currentProc() == nil || !p.IsAlive() {
 				return
 			}
 			// Sleep briefly before checking again to prevent busy-waiting
