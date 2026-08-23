@@ -13,7 +13,10 @@ import (
 
 type Process struct {
 	config Config
-	proc   *os.Process
+	// configErr holds the first error returned while applying this process's
+	// options. Run reports it rather than starting a half-configured process.
+	configErr error
+	proc      *os.Process
 
 	// PID holds the process ID last written to the pidfile.
 	//
@@ -47,14 +50,22 @@ type Process struct {
 // matching on that text keep working.
 var ErrProcessAlreadyRun = errors.New("command already started: a Process handle is single-use, construct a new one to start another process")
 
-// New builds up a new process with options
+// New builds up a new process with options.
+//
+// An option that fails to apply is remembered and returned by Run, which
+// refuses to start. New keeps returning only *Process so existing callers
+// still compile, but the failure is no longer lost: Apply stops at the first
+// failing option, so the ones after it never reach the config, and a process
+// started in that state would run without its arguments, environment or
+// working directory.
 func New(p ...Option) *Process {
 	c := DefaultConfig()
-	c.Apply(p...)
+	err := c.Apply(p...)
 
 	return &Process{
-		config: *c,
-		done:   make(chan struct{}),
+		config:    *c,
+		configErr: err,
+		done:      make(chan struct{}),
 	}
 }
 
@@ -185,6 +196,11 @@ func exists(name string) bool {
 // build a new handle with New. A Run that fails before starting anything can be
 // retried.
 func (p *Process) Run() error {
+	// Checked before the run is claimed: a handle that can never start should
+	// not burn its single use.
+	if p.configErr != nil {
+		return fmt.Errorf("applying process options: %w", p.configErr)
+	}
 
 	if err := p.claimRun(); err != nil {
 		return err
@@ -289,7 +305,7 @@ func (p *Process) Stop() error {
 	if pid == "" {
 		return errors.New("stop failed: PID is empty")
 	}
-	
+
 	// convert pid string to int
 	pidInt, err := strconv.ParseInt(pid, 10, 64)
 	if err != nil {
