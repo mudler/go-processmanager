@@ -221,12 +221,15 @@ func (p *Process) Run() error {
 		}
 	}
 
-	// Set the current process as a subreaper to manage orphaned child processes
-	// This ensures that when child processes terminate, their zombie processes
-	// are reparented to us instead of init, allowing proper cleanup
-	if err := SetSubreaper(); err != nil {
-		// Non-fatal error - log and continue
-		// This will fail on non-Linux systems but that's expected
+	// Optionally set the current process as a subreaper, so that orphaned
+	// descendants are reparented to us instead of init and can be cleaned up.
+	// Off by default: this is a process-wide setting, and the reaper it turns
+	// on claims any child of this process, including ones the Go runtime owns.
+	if p.config.Subreaper {
+		if err := SetSubreaper(); err != nil {
+			// Non-fatal error - log and continue
+			// This will fail on non-Linux systems but that's expected
+		}
 	}
 
 	wd := p.config.WorkDir
@@ -376,9 +379,13 @@ func (p *Process) monitor() {
 	}
 	defer close(p.done)
 
-	// Start a goroutine to reap orphaned child processes
-	// This is needed when we're acting as a subreaper
-	go p.reapChildren()
+	// Start a goroutine to reap orphaned child processes, but only when we were
+	// asked to act as a subreaper. It reaps with wait(-1), which claims any
+	// child of the calling process, so running it unasked breaks os/exec for
+	// the whole program.
+	if p.config.Subreaper {
+		go p.reapChildren()
+	}
 
 	status := make(chan *os.ProcessState)
 	died := make(chan error)

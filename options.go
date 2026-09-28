@@ -78,3 +78,19 @@ func WithKillProcessGroup(b bool) func(cfg *Config) error {
 		return nil
 	}
 }
+
+// WithSubreaper makes the calling process a child subreaper for the lifetime of
+// this process, and reaps any orphan reparented to it.
+//
+// It is off by default, and should only be enabled by a program that is the
+// init of its own PID namespace or container. Reaping orphans means calling
+// wait(-1), which claims *any* child of the calling process, including children
+// the Go runtime is waiting on. With this enabled, an unrelated
+// exec.Command(...).Run() elsewhere in the program can lose its exit status and
+// fail with "waitid: no child processes".
+func WithSubreaper(b bool) func(cfg *Config) error {
+	return func(cfg *Config) error {
+		cfg.Subreaper = b
+		return nil
+	}
+}
