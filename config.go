@@ -18,6 +18,7 @@ type Config struct {
 	WorkDir          string
 	GracefulTimeout  time.Duration // Time to wait after SIGTERM before SIGKILL
 	KillProcessGroup bool          // Whether to kill entire process group (default true)
+	Subreaper        bool          // Whether to become a child subreaper and reap orphans (default false)
 }
 
 func DefaultConfig() *Config {
