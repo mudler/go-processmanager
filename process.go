@@ -242,18 +242,25 @@ func (p *Process) Run() error {
 		}
 	}
 
+	stdout := NewLog(p.StdoutPath())
+	stderr := NewLog(p.StderrPath())
 	proc := &os.ProcAttr{
 		Dir: wd,
 		Env: p.config.Environment,
 		Files: []*os.File{
 			p.config.Stdin,
-			NewLog(p.StdoutPath()),
-			NewLog(p.StderrPath()),
+			stdout,
+			stderr,
 		},
 		Sys: getSysProcAttr(),
 	}
 	args := append([]string{p.config.Name}, p.config.Args...)
 	process, err := os.StartProcess(p.config.Name, args, proc)
+	// The child has its own copies of the log files now. Keeping ours open
+	// leaks two descriptors per Run and, on Windows, keeps the state
+	// directory from being removed while the handle is alive.
+	closeLog(stdout)
+	closeLog(stderr)
 	if err != nil {
 		p.releaseClaim()
 		return err

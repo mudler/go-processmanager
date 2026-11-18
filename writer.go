@@ -17,3 +17,10 @@ func NewLog(path string) *os.File {
 	}
 	return file
 }
+
+// closeLog closes a file returned by NewLog. It accepts nil.
+func closeLog(f *os.File) {
+	if f != nil {
+		f.Close()
+	}
+}
