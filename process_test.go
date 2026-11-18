@@ -113,9 +113,12 @@ echo "ok"
 					WithStateDir(dir),
 				).IsAlive()
 			}, "2m").Should(BeFalse())
-			e, err := New(WithStateDir(dir)).ExitCode()
-			Expect(err).ToNot(HaveOccurred())
-			Expect(e).To(Equal("0"))
+			// The process is reaped before the monitor writes the exit
+			// code, so the file can be missing or empty for a moment.
+			Eventually(func() string {
+				e, _ := New(WithStateDir(dir)).ExitCode()
+				return e
+			}, "10s").Should(Equal("0"))
 		})
 		It("correctly returns 2", func() {
 			dir, err := os.MkdirTemp(os.TempDir(), "")
@@ -136,9 +139,12 @@ exit 2
 					WithStateDir(dir),
 				).IsAlive()
 			}, "2m").Should(BeFalse())
-			e, err := New(WithStateDir(dir)).ExitCode()
-			Expect(err).ToNot(HaveOccurred())
-			Expect(e).To(Equal("2"))
+			// The process is reaped before the monitor writes the exit
+			// code, so the file can be missing or empty for a moment.
+			Eventually(func() string {
+				e, _ := New(WithStateDir(dir)).ExitCode()
+				return e
+			}, "10s").Should(Equal("2"))
 		})
 	})
 
