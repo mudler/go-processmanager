@@ -2,6 +2,7 @@ package process
 
 import (
 	"os"
+	"syscall"
 	"time"
 )
 
@@ -19,6 +20,17 @@ type Config struct {
 	GracefulTimeout  time.Duration // Time to wait after SIGTERM before SIGKILL
 	KillProcessGroup bool          // Whether to kill entire process group (default true)
 	Subreaper        bool          // Whether to become a child subreaper and reap orphans (default false)
+
+	// SysProcAttr holds caller-supplied attributes for process creation. Run
+	// copies it and never changes the caller's value. On Unix, Setpgid is
+	// always set (unless Setsid is set) so that Stop can signal the group.
+	SysProcAttr *syscall.SysProcAttr
+	// JobObject puts the process in a Windows job object that kills every
+	// process in it when the job is closed. Ignored on other platforms.
+	JobObject bool
+	// ConsoleCtrlBreak makes Stop send CTRL_BREAK_EVENT before it terminates
+	// the process. Windows only. Ignored on other platforms.
+	ConsoleCtrlBreak bool
 }
 
 func DefaultConfig() *Config {

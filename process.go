@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
-	"syscall"
-	"time"
 )
 
 type Process struct {
@@ -39,6 +37,10 @@ type Process struct {
 	started bool
 
 	done chan struct{}
+
+	// plat holds the platform-specific state of a started process, such as
+	// the Windows process and job object handles. It has its own lock.
+	plat platformState
 }
 
 // ErrProcessAlreadyRun is returned by Run when the handle has already started a
@@ -242,6 +244,12 @@ func (p *Process) Run() error {
 		}
 	}
 
+	sys, err := p.sysProcAttr()
+	if err != nil {
+		p.releaseClaim()
+		return err
+	}
+
 	stdout := NewLog(p.StdoutPath())
 	stderr := NewLog(p.StderrPath())
 	proc := &os.ProcAttr{
@@ -252,7 +260,7 @@ func (p *Process) Run() error {
 			stdout,
 			stderr,
 		},
-		Sys: getSysProcAttr(),
+		Sys: sys,
 	}
 	args := append([]string{p.config.Name}, p.config.Args...)
 	process, err := os.StartProcess(p.config.Name, args, proc)
@@ -266,13 +274,27 @@ func (p *Process) Run() error {
 		return err
 	}
 
+	if err := p.afterStart(process); err != nil {
+		// The process exists but could not be set up as asked. Do not leave
+		// it running unmanaged.
+		process.Kill()
+		process.Wait()
+		p.releaseClaim()
+		return err
+	}
+
 	p.setProc(process)
 	p.writePID(process)
 	go p.monitor()
 	return nil
 }
 
-// IsAlive checks if the process is running or not
+// IsAlive checks if the process recorded in the pidfile is running.
+//
+// The check is by PID. A pidfile left behind by a process that has exited can
+// name a PID that the operating system has since given to another process, and
+// IsAlive then reports that process. See the README for the details on each
+// platform.
 func (p *Process) IsAlive() bool {
 	pidStr, err := p.readPID()
 	if err != nil {
@@ -282,31 +304,15 @@ func (p *Process) IsAlive() bool {
 	if err != nil {
 		return false
 	}
-	proc, err := os.FindProcess(int(pid))
-	if err != nil {
-		return false
-	}
-	err = proc.Signal(syscall.Signal(0))
-	if err == nil {
-		return true
-	}
-	if err.Error() == "os: process already finished" {
-		return false
-	}
-	errno, ok := err.(syscall.Errno)
-	if !ok {
-		return false
-	}
-	switch errno {
-	case syscall.ESRCH:
-		return false
-	case syscall.EPERM:
-		return true
-	}
-	return false
+	return p.processAlive(int(pid))
 }
 
-// Stop stops the running process by sending KillSignal to the PID annotated in the pidfile
+// Stop stops the process annotated in the pidfile.
+//
+// On Unix it sends KillSignal (SIGTERM by default) to the process, or to its
+// process group, waits up to GracefulTimeout and then sends SIGKILL. On
+// Windows, see the README: KillSignal is ignored, and the process is
+// terminated unless a console break was requested with WithConsoleCtrlBreak.
 func (p *Process) Stop() error {
 	pid, err := p.readPID()
 	if err != nil {
@@ -322,40 +328,7 @@ func (p *Process) Stop() error {
 		return fmt.Errorf("failed to parse PID %q: %w", pid, err)
 	}
 
-	// Determine which signal to send
-	signal := syscall.SIGTERM
-	if p.config.KillSignal != nil {
-		signal = syscall.Signal(*p.config.KillSignal)
-	}
-
-	// Send the initial signal (SIGTERM or custom KillSignal)
-	if err := killProcess(int(pidInt), signal, p.config.KillProcessGroup); err != nil {
-		return fmt.Errorf("failed to send signal %v to process %d: %w", signal, pidInt, err)
-	}
-
-	// Wait for graceful timeout then send SIGKILL if the process is still alive
-	if p.config.GracefulTimeout > 0 {
-		// Wait for the graceful timeout period
-		deadline := time.Now().Add(p.config.GracefulTimeout)
-		for time.Now().Before(deadline) {
-			if !p.IsAlive() {
-				// Process has terminated, no need to force kill
-				p.release()
-				return nil
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-
-		// If still alive after grace period, send SIGKILL
-		if p.IsAlive() {
-			if err := killProcess(int(pidInt), syscall.SIGKILL, p.config.KillProcessGroup); err != nil {
-				return fmt.Errorf("failed to send SIGKILL to process %d: %w", pidInt, err)
-			}
-		}
-	}
-
-	p.release()
-	return nil
+	return p.stop(int(pidInt))
 }
 
 // Release process and remove pidfile
@@ -406,19 +379,31 @@ func (p *Process) monitor() {
 		status <- state
 	}()
 
+	var (
+		state   *os.ProcessState
+		waitErr error
+	)
 	select {
-	case s := <-status:
-		os.WriteFile(
-			p.path("exitcode"),
-			[]byte(fmt.Sprint(s.ExitCode())),
-			os.ModePerm,
-		)
-	case err := <-died:
+	case state = <-status:
+	case waitErr = <-died:
+	}
+
+	// Release the platform resources tied to this process. On Windows this
+	// closes the job object, if any.
+	p.afterExit()
+
+	if waitErr != nil {
 		os.WriteFile(
 			p.path("error"),
-			[]byte(err.Error()),
+			[]byte(waitErr.Error()),
 			os.ModePerm,
 		)
 		p.release()
+		return
 	}
+	os.WriteFile(
+		p.path("exitcode"),
+		[]byte(fmt.Sprint(state.ExitCode())),
+		os.ModePerm,
+	)
 }
