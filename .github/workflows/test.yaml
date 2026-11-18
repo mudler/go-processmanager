@@ -17,4 +17,19 @@ jobs:
     # -race is what catches the process-lifecycle races between the caller and
     # the internal monitor goroutine; without it they stay invisible in CI.
     - name: Test
-      run: go test -race -v ./
+      run: go test -race -v ./  # The Unix suite needs /bin/bash and is not built on Windows. This job runs
+  # the Windows tests, which start the test binary itself as the managed
+  # process. -race is left out: it needs cgo and a C toolchain on the runner.
+  test-windows:
+    runs-on: windows-latest
+    steps:
+    - name: Install Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: stable
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Vet
+      run: go vet ./...
+    - name: Test
+      run: go test -v ./...
